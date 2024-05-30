@@ -12,6 +12,8 @@ FFMPEG_PATH = HERE / "./ffmpeg/ffmpeg.exe"
 DEBUG = False
 
 STYLES = {
-    "yolov7-tiny": "yolov7-tiny.pt",
+    "yolov8n": "yolov8n.pt",
+    "yolov10n":"yolov10n.pt",
+    "yolov9-c": "yolov9-c.pt",
 }
 

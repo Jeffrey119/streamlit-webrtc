@@ -9,7 +9,7 @@
             "type": "debugpy",
             "request": "launch",
             "module": "streamlit",
-            "args": ["run", "main.py"]
+            "args": ["run", "main.py","--server.enableXsrfProtection", "false"]
         }
     ]
 }

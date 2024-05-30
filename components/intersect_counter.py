@@ -12,6 +12,7 @@ from pandas.api.types import (
     is_numeric_dtype,
     is_object_dtype,
 )
+from supervision.annotators.utils import ColorLookup, Trace, resolve_color
 
 from components import session_result
 
@@ -86,13 +87,13 @@ class st_IntersectCounter:
             st.session_state.counters = []
         if 'counted' not in st.session_state:
             st.session_state.counted = False
-        self.display_scale = width / screen_width
+        self.display_scale = width / screen_width *0.9
         self.counters_df_display = None
         self.counters_num = 0
-        self.wrapper = st.expander( "**Setup Counter**" )
+        self.wrapper = st.expander( "**Setup Counter**" , expanded=True)
         self.option = 'Empty'
         self.counter_result_display = None
-        screen_height = height // self.display_scale
+        screen_height = max(height // self.display_scale, 400)
         with self.wrapper:
             st.caption( "Draw lines on the below picture to set up counting function" )
             canvas_result = st_canvas(
@@ -249,7 +250,7 @@ class st_IntersectCounter:
             counters = st.session_state.counters
         if len( counters ) > 0:
             for track in tracks:
-                if len( track.history ) > 2:
+                if track.tracklet_len > 2:
                     track_last_path = [point( *track.history[-1] ), point( *track.history[-2] )]
 
                     # dump the tracked object to the result queue
