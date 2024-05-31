@@ -20,7 +20,7 @@ class st_VariablesPanel:
                 "Tracking hits (not used)", 0, st.session_state.track_age, 3, 1, key='tracking_hits'
             )
             st.slider(
-                "IOU threshold", 0.0, 1.0, 0.5, 0.1, key='iou_thres'
+                "IOU threshold", 0.0, 1.0, 0.8, 0.1, key='iou_thres'
             )
 
     def get_var(self):

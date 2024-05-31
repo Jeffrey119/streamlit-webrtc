@@ -15,9 +15,9 @@ from io import BytesIO
 import streamlit as st
 from aiortc.contrib.media import MediaPlayer
 import sys
-from ultralytics import YOLO
+from ultralytics import YOLO, YOLOv10
 import supervision as sv
-
+from collections import defaultdict
 
 sys.setrecursionlimit( 4000 )
 
@@ -117,21 +117,26 @@ def video_object_detection(variables):
             process = subprocess.Popen( [ffmpeg_source] + args, stdin=subprocess.PIPE )
 
             # init object detector and tracker
-            model = YOLO(config.STYLES[weight])
+            if weight == "yolov10n":
+                model = YOLOv10(config.STYLES[weight])
+            else:    
+                model = YOLO(config.STYLES[weight])
             # model.to('cuda')
-            byte_tracker = sv.ByteTrack(track_thresh=confidence_threshold, track_buffer=track_age, match_thresh=iou_thres, frame_rate=fps)
-            bounding_box_annotator = sv.BoundingBoxAnnotator()
-            label_annotator = sv.LabelAnnotator(
-                text_color=sv.Color.BLACK
-            )
-            trace_annotator = sv.TraceAnnotator(
-                position=sv.Position.CENTER, trace_length=100, thickness=2)
+            # bounding_box_annotator = sv.BoundingBoxAnnotator()
+            # label_annotator = sv.LabelAnnotator(
+            #     text_color=sv.Color.BLACK
+            # )
+            # trace_annotator = sv.TraceAnnotator(
+            #     position=sv.Position.CENTER, trace_length=100, thickness=2)
             frame_num = fc.FrameCounter()
 
             # dict maping class_id to class_name
             CLASS_NAMES_DICT = model.model.names
             # class_ids of interest - car, motorcycle, bus and truck
             CLASS_ID = [2,3, 5, 7]
+
+            # Store the track history
+            track_history = defaultdict(lambda: [])
 
             # analysis per frame here
             while cap.isOpened():
@@ -142,27 +147,47 @@ def video_object_detection(variables):
                 except Exception as e:
                     print( e )
                     continue
-                results = model.predict(frame, classes=CLASS_ID)[0]
+                results = model.track(frame, persist=True, conf=confidence_threshold, iou=iou_thres)
+                annotated_frame = results[0].plot()
                 
+                # Get the boxes and track IDs
+                boxes = results[0].boxes.xywh.cpu()
+                track_ids = results[0].boxes.id.int().cpu().tolist() if results[0].boxes.id is not None else []
+
+                # Visualize the results on the frame
+                annotated_frame = results[0].plot()
+
+                # Plot the tracks
+                for box, track_id in zip(boxes, track_ids):
+                    x, y, w, h = box
+                    track = track_history[track_id]
+                    track.append((float(x), float(y)))  # x, y center point
+                    if len(track) > 120:  # retain 90 tracks for 90 frames
+                        track.pop(0)
+
+                    # Draw the tracking lines
+                    points = np.hstack(track).astype(np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(annotated_frame, [points], isClosed=False, color=(230, 230, 230), thickness=10)
+            
                 # filtering out detections with unwanted classes
-                detections = sv.Detections.from_ultralytics(results)
+                # detections = sv.Detections.from_ultralytics(results)
                 # detections = detections[np.isin(detections.class_id, CLASS_ID)]
 
                 # tracking detections
-                detections = byte_tracker.update_with_detections(detections)
-                labels = [
-                        f"#{tracker_id} {model.model.names[class_id]} {confidence:0.2f}"
-                    for confidence, class_id, tracker_id
-                    in zip(detections.confidence, detections.class_id, detections.tracker_id)
-                ]
-                annotated_frame = trace_annotator.annotate(frame.copy(), detections)
-                annotated_frame = bounding_box_annotator.annotate(
-                    annotated_frame, detections
-                )
-                annotated_frame = label_annotator.annotate(
-                    annotated_frame, detections, labels
-                )
-                image = icounter.update_counters( byte_tracker.tracked_tracks, annotated_frame )
+                # detections = byte_tracker.update_with_detections(detections)
+                # labels = [
+                #         f"#{tracker_id} {model.model.names[class_id]} {confidence:0.2f}"
+                #     for confidence, class_id, tracker_id
+                #     in zip(detections.confidence, detections.class_id, detections.tracker_id)
+                # ]
+                # annotated_frame = trace_annotator.annotate(frame.copy(), detections)
+                # annotated_frame = bounding_box_annotator.annotate(
+                #     annotated_frame, detections
+                # )
+                # annotated_frame = label_annotator.annotate(
+                #     annotated_frame, detections, labels
+                # )
+                image = icounter.update_counters( results, annotated_frame )
 
                 # Update object localizer
                 # image, result = track_and_annotate_detections( frame, detections, sort_tracker,
