@@ -9,15 +9,15 @@ class st_VariablesPanel:
             st.selectbox( 'Choose the [detection model](https://github.com/WongKinYiu/yolov7)',
                           list( config.STYLES.keys() ), key='model_style' )
             st.slider(
-                "Confidence threshold", 0.0, 1.0, 0.5, 0.05, key='confidence_threshold'
+                "Confidence threshold", 0.0, 1.0, 0.25, 0.05, key='confidence_threshold'
             )
             st.subheader( "Tracking" )
             st.caption( '[DEEPSORT](https://github.com/deshwalmahesh/yolov7-deepsort-tracking) Tracking Algorithm' )
             st.slider(
-                "Tracking Age (frames)", 0, 20, 10, 1, key='track_age'
+                "Tracking Age (frames)", 0, 100, 50, 1, key='track_age'
             )
             st.slider(
-                "Tracking hits", 0, st.session_state.track_age, 3, 1, key='tracking_hits'
+                "Tracking hits (not used)", 0, st.session_state.track_age, 3, 1, key='tracking_hits'
             )
             st.slider(
                 "IOU threshold", 0.0, 1.0, 0.5, 0.1, key='iou_thres'

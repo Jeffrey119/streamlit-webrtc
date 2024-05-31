@@ -18,6 +18,7 @@ import sys
 from ultralytics import YOLO
 import supervision as sv
 
+
 sys.setrecursionlimit( 4000 )
 
 from streamlit_webrtc import (
@@ -117,15 +118,20 @@ def video_object_detection(variables):
 
             # init object detector and tracker
             model = YOLO(config.STYLES[weight])
+            # model.to('cuda')
             byte_tracker = sv.ByteTrack(track_thresh=confidence_threshold, track_buffer=track_age, match_thresh=iou_thres, frame_rate=fps)
             bounding_box_annotator = sv.BoundingBoxAnnotator()
             label_annotator = sv.LabelAnnotator(
                 text_color=sv.Color.BLACK
             )
             trace_annotator = sv.TraceAnnotator(
-                position=sv.Position.BOTTOM_CENTER, trace_length=100, thickness=2
-            )
+                position=sv.Position.CENTER, trace_length=100, thickness=2)
             frame_num = fc.FrameCounter()
+
+            # dict maping class_id to class_name
+            CLASS_NAMES_DICT = model.model.names
+            # class_ids of interest - car, motorcycle, bus and truck
+            CLASS_ID = [2,3, 5, 7]
 
             # analysis per frame here
             while cap.isOpened():
@@ -136,8 +142,13 @@ def video_object_detection(variables):
                 except Exception as e:
                     print( e )
                     continue
-                results = model(frame)[0]
+                results = model.predict(frame, classes=CLASS_ID)[0]
+                
+                # filtering out detections with unwanted classes
                 detections = sv.Detections.from_ultralytics(results)
+                # detections = detections[np.isin(detections.class_id, CLASS_ID)]
+
+                # tracking detections
                 detections = byte_tracker.update_with_detections(detections)
                 labels = [
                         f"#{tracker_id} {model.model.names[class_id]} {confidence:0.2f}"
@@ -152,6 +163,7 @@ def video_object_detection(variables):
                     annotated_frame, detections, labels
                 )
                 image = icounter.update_counters( byte_tracker.tracked_tracks, annotated_frame )
+
                 # Update object localizer
                 # image, result = track_and_annotate_detections( frame, detections, sort_tracker,
                 #                                               st.session_state.counters, progress( 0 ) )

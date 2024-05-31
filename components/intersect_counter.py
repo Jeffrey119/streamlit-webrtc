@@ -250,18 +250,19 @@ class st_IntersectCounter:
             counters = st.session_state.counters
         if len( counters ) > 0:
             for track in tracks:
-                if track.tracklet_len > 2:
-                    track_last_path = [point( *track.history[-1] ), point( *track.history[-2] )]
-
-                    # dump the tracked object to the result queue
-                    detected_obj = track.detection[-1]
-
-                    for p in counters:
-                        p.check_intersect( track_last_path, detected_obj )
-                        cv2.line( frame, tuple( map( int, p.vertices[0] ) ), tuple( map( int, p.vertices[1] ) ),
-                                  COLORS[p.id], thickness=2 )
-                        label = f'Counter_{p.id}: {p.count}'
-                        cv2.putText( frame, label, tuple( map( int, copy.deepcopy( p.vertices[0] ) + point( 5, 5 ) ) ),
-                                     cv2.FONT_HERSHEY_SIMPLEX,
-                                     1, COLORS[p.id], 2 )
+                pass
+                #if track.tracklet_len > 2:
+                #    track_last_path = [point( *track.history[-1] ), point( *track.history[-2] )]
+#
+                #    # dump the tracked object to the result queue
+                #    detected_obj = track.detection[-1]
+#
+                #    for p in counters:
+                #        p.check_intersect( track_last_path, detected_obj )
+                #        cv2.line( frame, tuple( map( int, p.vertices[0] ) ), tuple( map( int, p.vertices[1] ) ),
+                #                  COLORS[p.id], thickness=2 )
+                #        label = f'Counter_{p.id}: {p.count}'
+                #        cv2.putText( frame, label, tuple( map( int, copy.deepcopy( p.vertices[0] ) + point( 5, 5 ) ) ),
+                #                     cv2.FONT_HERSHEY_SIMPLEX,
+                #                     1, COLORS[p.id], 2 )
         return frame
