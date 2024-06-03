@@ -14,7 +14,6 @@ DEBUG = False
 STYLES = {
     "yolov8x": "yolov8x.pt",
     "yolov8n": "yolov8n.pt",
-    "yolov10n":"yolov10n.pt",
     "yolov9-c": "yolov9-c.pt",
 }
 

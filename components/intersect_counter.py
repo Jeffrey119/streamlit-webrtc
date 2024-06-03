@@ -13,8 +13,9 @@ from pandas.api.types import (
     is_object_dtype,
 )
 from supervision.annotators.utils import ColorLookup, Trace, resolve_color
-
+from ultralytics import YOLO, solutions
 from components import session_result
+from collections import defaultdict
 
 COLORS = np.random.uniform( 0, 255, size=(1024, 3) )
 
@@ -39,25 +40,38 @@ class point():
         for i in [self.x, self.y]:
             yield i
 
+    def __len__(self):
+        return 2
+    
+    def __getitem__(self, idx):
+        return (self.x, self.y)[idx]
+
 
 # https://stackoverflow.com/questions/3838329/how-can-i-check-if-two-segments-intersect
 def ccw(A, B, C):
     return (C.y - A.y) * (B.x - A.x) > (B.y - A.y) * (C.x - A.x)
 
 
-class IntersectCounter():
-    def __init__(self, vertices: List[point], id, scale: float = 1.0):
+class IntersectCounter(solutions.ObjectCounter):
+    def __init__(self, vertices: List[point], id, classes_names, scale: float = 1.0, ):
         self.vertices = [v * scale for v in vertices]
-        self.count = 0
-        self.counted_objects = []
+        # Init Object Counter
+        super().__init__(
+            view_img=True,
+            reg_pts=self.vertices,
+            classes_names=classes_names,
+            draw_tracks=True,
+            line_thickness=2,
+        )
         self.id = int( id )
 
     @classmethod
-    def init_centroid(cls, centroid, x_offset, y_offset, id, scale=1.0):
+    def init_centroid(cls, centroid, x_offset, y_offset, id, class_names, scale=1.0):
         p1, p2 = copy.deepcopy( centroid ), copy.deepcopy( centroid )
         vertices = [p1 + point( x_offset, y_offset ), p2 + point( -x_offset, -y_offset )]
-        return cls( vertices, id, scale )
+        return cls( vertices, id, class_names, scale )
 
+    @DeprecationWarning
     def check_intersect(self, path_vertices: List[point], object):
         A, B, C, D = self.vertices[0], self.vertices[1], path_vertices[0], path_vertices[1]
         if ccw( A, C, D ) != ccw( B, C, D ) and ccw( A, B, C ) != ccw( A, B, D ):
@@ -66,27 +80,45 @@ class IntersectCounter():
         return self.count
 
     def reset(self):
-        self.count = 0
-        self.counted_objects = []
+        # Object counting Information
+        self.in_counts = 0
+        self.out_counts = 0
+        self.count_ids = []
+        self.class_wise_count = {}
+
+        # Tracks info
+        self.track_history = defaultdict(list)
+
+    def update_counters(self, frame, tracks, override_counter = None):
+        if override_counter is not None:
+            counters = override_counter # cannot access st.session state in webrtc
+        else:
+            counters = st.session_state.counters[self.tab_id]
+        annontatedframe = frame
+        if len( counters ) > 0:
+            for p in counters:
+                annontatedframe = p.counter.start_counting(annontatedframe, tracks)
+        return annontatedframe
+
+
 
 
 class st_IntersectCounter:
-    def __init__(self, image, width, height, screen_width=1200):
+    def __init__(self, image, id, width, height, screen_width=1200):
         self.user_num_input = None
         self.user_cat_input = None
         self.to_filter_columns = None
         self.modification_container = None
         self.left = None
         self.right = None
-        if 'counters_table' not in st.session_state:
-            st.session_state.counters_table = None
+        self.tab_id = id
+        if 'counters_tables' not in st.session_state:
+            st.session_state.counters_tables = {}
             self.counters_table = None
         else:
-            self.counters_table = st.session_state.counters_table
+            self.counters_table = st.session_state.counters_tables.get(self.tab_id,None)
         if 'counters' not in st.session_state:
-            st.session_state.counters = []
-        if 'counted' not in st.session_state:
-            st.session_state.counted = False
+            st.session_state.counters = {}
         self.display_scale = width / screen_width *0.9
         self.counters_df_display = None
         self.counters_num = 0
@@ -101,7 +133,7 @@ class st_IntersectCounter:
                 height=screen_height,
                 background_image=Image.fromarray( cv2.cvtColor( image, cv2.COLOR_BGR2RGB ) ),
                 stroke_width=1,
-                drawing_mode='line', key="canvas"
+                drawing_mode='line', key="canvas"+str(self.tab_id)
             )
 
             if canvas_result.json_data is not None:
@@ -111,19 +143,24 @@ class st_IntersectCounter:
                     self.format_counters_display()
                     all( self.generate_counters() )
                     st.markdown( '**Screenline Counters**' )
-                    self.counters_df_display = st.dataframe(
-                        st.session_state.counters_table.style.format( precision=1 ), use_container_width=True, )
-                    st.markdown( '**Screenline Counters Result**' )
+            if st.session_state.counters_tables.get(self.tab_id) is not None:
+                self.counters_df_display = st.dataframe(
+                    st.session_state.counters_tables.get(self.tab_id).style.format( precision=1 ), use_container_width=True, )
+                        #st.markdown( '**Screenline Counters Result**' )
 
     def generate_counters(self):
-        if not st.session_state.counted:
-            st.session_state.counters = []
-        for ind in range( len( st.session_state.counters ), self.counters_num ):
+        # if not st.session_state.counted:
+        #     st.session_state.counters = []
+        existed_counter = st.session_state.counters.get(self.tab_id, None)
+        if existed_counter is None:
+            st.session_state.counters[self.tab_id] = []
+            existed_counter=st.session_state.counters.get(self.tab_id)
+        for ind in range( len( existed_counter ), self.counters_num ):
             centroid = point( self.counters_table['left'][ind], self.counters_table['top'][ind] )
             xoffset = self.counters_table['x1'][ind]
             yoffset = self.counters_table['y1'][ind]
-            counter = IntersectCounter.init_centroid( centroid, xoffset, yoffset, ind, self.display_scale )
-            st.session_state.counters.append( counter )
+            counter = IntersectCounter.init_centroid( centroid, xoffset, yoffset, ind, st.session_state.class_names, self.display_scale )
+            existed_counter.append( counter )
             self.sync_session_state()
             yield counter
 
@@ -211,17 +248,16 @@ class st_IntersectCounter:
         return df
 
     def show_counter_results(self):
-        if len( st.session_state.counters ) > 0 and st.session_state.counted:
-            with self.wrapper:
-                result_df = self.filter_dataframe(session_result.result_to_df([d.counted_objects for d in st.session_state.counters], counter_column=True) )
-                result_df = result_df.style.background_gradient( axis=0, gmap=result_df['counter'], cmap='BuPu' )
-                if self.counter_result_display is not None:
-                    self.counter_result_display.dataframe( result_df, use_container_width=True )
-                else:
-                    self.counter_result_display = st.dataframe( result_df, use_container_width=True )
+        if len( st.session_state.counters.get(self.tab_id, None) ) > 0:
+            result_df = self.filter_dataframe(session_result.result_to_df([d.counted_objects for d in st.session_state.counters.get(self.tab_id, None)], counter_column=True) )
+            result_df = result_df.style.background_gradient( axis=0, gmap=result_df['counter'], cmap='BuPu' )
+            if self.counter_result_display is not None:
+                self.counter_result_display.dataframe( result_df, use_container_width=True )
+            else:
+                self.counter_result_display = st.dataframe( result_df, use_container_width=True )
 
-                self.counters_df_display.dataframe(
-                    self.format_counters_display().style.format( precision=1 ) )
+            self.counters_df_display.dataframe(
+                self.format_counters_display().style.format( precision=1 ) )
 
     def format_counters_display(self):
         self.counters_table = pd.json_normalize( self.canvas_result )
@@ -231,38 +267,12 @@ class st_IntersectCounter:
             # self.counters_table.style.format(precision=1)
         else:
             return None
-        if len( st.session_state.counters ) == len( self.counters_table ):
-            self.counters_table['count'] = [r.count for r in st.session_state.counters]
+        if len( st.session_state.counters.get(self.tab_id,[]) ) == len( self.counters_table ) and len( st.session_state.counters.get(self.tab_id,[]) ) > 0:
+            self.counters_table['in_counts'] = [r.in_counts for r in st.session_state.counters[self.tab_id]]
+            self.counters_table['out_counts'] = [r.out_counts for r in st.session_state.counters[self.tab_id]]
         self.sync_session_state()
         return self.counters_table
 
     def sync_session_state(self):
-        st.session_state.counters_table = self.counters_table
+        st.session_state.counters_tables[self.tab_id] = self.counters_table
 
-    def reset_counters(self):
-        for c in st.session_state.counters:
-            c.reset()
-
-    def update_counters(self, tracks, frame, override_counter = None):
-        if override_counter is not None:
-            counters = override_counter # cannot access st.session state in webrtc
-        else:
-            counters = st.session_state.counters
-        if len( counters ) > 0:
-            for track in tracks:
-                pass
-                #if track.tracklet_len > 2:
-                #    track_last_path = [point( *track.history[-1] ), point( *track.history[-2] )]
-#
-                #    # dump the tracked object to the result queue
-                #    detected_obj = track.detection[-1]
-#
-                #    for p in counters:
-                #        p.check_intersect( track_last_path, detected_obj )
-                #        cv2.line( frame, tuple( map( int, p.vertices[0] ) ), tuple( map( int, p.vertices[1] ) ),
-                #                  COLORS[p.id], thickness=2 )
-                #        label = f'Counter_{p.id}: {p.count}'
-                #        cv2.putText( frame, label, tuple( map( int, copy.deepcopy( p.vertices[0] ) + point( 5, 5 ) ) ),
-                #                     cv2.FONT_HERSHEY_SIMPLEX,
-                #                     1, COLORS[p.id], 2 )
-        return frame

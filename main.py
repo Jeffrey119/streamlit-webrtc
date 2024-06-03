@@ -1,5 +1,5 @@
 import config
-from components import intersect_counter as ic, frame_counter as fc, variables_panel as vp, session_result
+from components import intersect_counter as ic, variables_panel as vp, progress_bar as pb, session_result
 
 import platform
 import logging
@@ -15,9 +15,20 @@ from io import BytesIO
 import streamlit as st
 from aiortc.contrib.media import MediaPlayer
 import sys
-from ultralytics import YOLO, YOLOv10
+from ultralytics import YOLO
 import supervision as sv
 from collections import defaultdict
+from streamlit_drawable_canvas import st_canvas
+from streamlit.runtime.scriptrunner.script_run_context import add_script_run_ctx, get_script_run_ctx
+from PIL import Image
+from st_tabs import TabBar
+import threading
+import queue
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from super_image import EdsrModel, ImageLoader
+import torch.nn.functional as F
+from cv2 import dnn_superres
+import torch
 
 sys.setrecursionlimit( 4000 )
 
@@ -30,6 +41,102 @@ from streamlit_webrtc import (
 st.set_page_config( layout="wide" )
 logger = logging.getLogger( __name__ )
 
+# func to save BytesIO on a drive
+def write_bytesio_to_file(filename, bytesio):
+    """
+    Write the contents of the given BytesIO to a file.
+    Creates the file or overwrites the file if it does
+    not exist yet. 
+    """
+    with open(filename, "wb") as outfile:
+        # Copy the BytesIO stream to the output file
+        outfile.write(bytesio.getbuffer())
+
+def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, progress, ctx):
+    """
+    Runs a video file or webcam stream concurrently with the YOLOv8 model using threading.
+
+    This function captures video frames from a given file or camera source and utilizes the YOLOv8 model for object
+    tracking. The function runs in its own thread for concurrent processing.
+
+    Args:
+        filename (str): The path to the video file or the identifier for the webcam/external camera source.
+        model (obj): The YOLOv8 model object.
+        file_index (int): An index to uniquely identify the file being processed, used for display purposes.
+
+    Note:
+        Press 'q' to quit the video display window.
+    """
+
+    add_script_run_ctx(threading.currentThread(), ctx)
+
+    width, height = int( cap.get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( cap.get( cv2.CAP_PROP_FRAME_HEIGHT ) )
+    fps = cap.get( cv2.CAP_PROP_FPS )
+    output_path = os.path.join( config.HERE, f"storage\\{str( uuid.uuid4() )}.mp4" )
+
+    # encode cv2 output into h264
+    # https://stackoverflow.com/questions/30509573/writing-an-mp4-video-using-python-opencv
+    args = (ffmpeg
+            .input( 'pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format( width, height ) )
+            .output( output_path, pix_fmt='yuv420p', vcodec='libx264', r=fps, crf=12 )
+            .overwrite_output()
+            .get_args()
+            )
+
+    # check if deployed on cloud or local host
+    ffmpeg_source = config.FFMPEG_PATH if platform.processor() else 'ffmpeg'
+    process = subprocess.Popen( [ffmpeg_source] + args, stdin=subprocess.PIPE )
+
+    us_model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
+
+    while True:
+        ret, frame = cap.read()  # Read the video frames
+
+        # Exit the loop if no more frames in either video
+        if not ret:
+            break
+        
+        # inputs = ImageLoader.load_image(Image.fromarray(frame))
+        # lr = frame[::].astype(np.float32).transpose([2, 0, 1]) / 255.0
+        # inputs = torch.as_tensor(np.array([lr]))
+        # pred = us_model(inputs)
+# # 
+        # # Up-scale image
+        # pred = pred.data.cpu().numpy()
+        # pred = pred[0].transpose((1, 2, 0)) * 255.0
+        # pred = pred.astype(np.uint8)
+        # pred = cv2.cvtColor(pred, cv2.COLOR_BGR2RGB)
+        # frame = pred
+
+        # Apply your low-light enhancement algorithm (example with simple histogram equalization)
+        # frame = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+
+        # Track objects in frames if available
+        results = model.track(frame, persist=True, conf=conf, iou=iou, classes=CLASS_ID)
+        annotated_frame = results[0].plot()
+        if len(counter):
+            for icounter in counter:
+                annotated_frame = icounter.start_counting(annotated_frame, results)
+        
+        annotated_frame = cv2.resize(annotated_frame, (width, height)) 
+        process.stdin.write( cv2.cvtColor( annotated_frame, cv2.COLOR_BGR2RGB ).astype( np.uint8 ).tobytes() )
+        # st.session_state['result_list'].extend( results )
+
+        progress.progress(1)
+#
+
+    # Release video sources  
+    process.stdin.close()
+    process.wait()
+    process.kill()
+    cap.release()
+
+    # TODO: skip writing the analysis result into a temp file and read into memory
+    with open( output_path, "rb" ) as fh:
+        buf = BytesIO( fh.read() )
+    os.remove( output_path )
+
+    return buf
 
 def video_object_detection(variables):
     """
@@ -43,45 +150,49 @@ def video_object_detection(variables):
 
     if 'result_list' not in st.session_state:
         st.session_state.result_list = []
-    if 'video' not in st.session_state:
-        st.session_state.video = None
-    if 'file' not in st.session_state:
-        st.session_state.file = None
+    if 'videos' not in st.session_state:
+        st.session_state.videos = []
+    if 'files' not in st.session_state:
+        st.session_state.files = []
 
-    file = st.file_uploader( 'Choose a video', type=['avi', 'mp4', 'mov'] )
-    if file is not None:
-        if file != st.session_state.file:
-            st.session_state.file = file
-            st.session_state.video = None
-            st.session_state.counters = []
-            st.session_state.counters_table = []
+    files = st.file_uploader( 'Upload Videos', type=['avi', 'mp4', 'mov'] , accept_multiple_files=True)
+    if len(files):
+        if files != st.session_state.files:
+            st.session_state.files = files
+            st.session_state.videos = []
+            st.session_state.counters = {}
+            st.session_state.counters_tables = {}
             st.session_state.counted = False
-            st.session_state.result_list = []
+            st.session_state.result_list = {}
 
+        icounters = {}
+        caps = {}
+
+        # temp dir for saving the video to be processed by opencv
+        if not os.path.exists( os.path.join( config.HERE, 'storage' ) ):
+            os.makedirs( os.path.join( config.HERE, 'storage' ) )
         # save the uploaded file to a temporary location
-        temp_file_to_save = './temp_file_1.mp4'
+        for i, f in enumerate(files):
+            temp_file_to_save = f'./storage/temp_file_{i}.mp4'
+            write_bytesio_to_file(temp_file_to_save, f)
+            caps[i] = cv2.VideoCapture(temp_file_to_save)
 
-        # func to save BytesIO on a drive
-        def write_bytesio_to_file(filename, bytesio):
-            """
-            Write the contents of the given BytesIO to a file.
-            Creates the file or overwrites the file if it does
-            not exist yet. 
-            """
-            with open(filename, "wb") as outfile:
-                # Copy the BytesIO stream to the output file
-                outfile.write(bytesio.getbuffer())
+        # class_ids of interest - car, motorcycle, bus and truck
+        CLASS_ID = [2,3, 5, 7]
+        # init object detector and tracker
+        model = YOLO(config.STYLES[weight])
+        model.classes=CLASS_ID
+        # dict maping class_id to class_name
+        st.session_state.class_names = model.names
 
-        write_bytesio_to_file(temp_file_to_save, file)
-        cap = cv2.VideoCapture(temp_file_to_save)
+        tabs = TabBar(tabs=[f.name for f in files], default=0)
+ 
 
-        width, height = int( cap.get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( cap.get( cv2.CAP_PROP_FRAME_HEIGHT ) )
-        fps = cap.get( cv2.CAP_PROP_FPS )
-        total_frame = int( cap.get( cv2.CAP_PROP_FRAME_COUNT ) )
-        success, image = cap.read()
+        width, height = int( caps[tabs].get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( caps[tabs].get( cv2.CAP_PROP_FRAME_HEIGHT ) )
+        success, image = caps[tabs].read()
 
         # setup expander for user to draw line counters
-        icounter = ic.st_IntersectCounter( image, width, height )
+        icounters[id] = ic.st_IntersectCounter( image, tabs, width, height )
 
         # size limited by streamlit cloud service (superseded)
         # if max( width, height ) > 1920 or min( width, height ) > 1080:
@@ -90,132 +201,39 @@ def video_object_detection(variables):
         # else:
         detect = st.button( 'Detect' )
         if detect:
-            # show analysis progress
-            progress_txt = st.caption( f'Analysing Video: 0 out of {total_frame} frames' )
-            progress_bar = st.progress( 0 )
-            progress = fc.FrameCounter()
+            # reset all counters
+            for t, cs in st.session_state.counters.items():
+                for c in cs:
+                    c.reset()   
 
-            for c in st.session_state.counters:
-                c.reset()
+            progress_bars = {}
+            iterables = []
 
-            # temp dir for saving the video to be processed by opencv
-            if not os.path.exists( os.path.join( config.HERE, 'storage' ) ):
-                os.makedirs( os.path.join( config.HERE, 'storage' ) )
-            output_path = os.path.join( config.HERE, f"storage\\{str( uuid.uuid4() )}.mp4" )
-
-            # encode cv2 output into h264
-            # https://stackoverflow.com/questions/30509573/writing-an-mp4-video-using-python-opencv
-            args = (ffmpeg
-                    .input( 'pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format( width, height ) )
-                    .output( output_path, pix_fmt='yuv420p', vcodec='libx264', r=fps, crf=12 )
-                    .overwrite_output()
-                    .get_args()
-                    )
-
-            # check if deployed on cloud or local host
-            ffmpeg_source = config.FFMPEG_PATH if platform.processor() else 'ffmpeg'
-            process = subprocess.Popen( [ffmpeg_source] + args, stdin=subprocess.PIPE )
-
-            # init object detector and tracker
-            if weight == "yolov10n":
-                model = YOLOv10(config.STYLES[weight])
-            else:    
-                model = YOLO(config.STYLES[weight])
-            # model.to('cuda')
-            # bounding_box_annotator = sv.BoundingBoxAnnotator()
-            # label_annotator = sv.LabelAnnotator(
-            #     text_color=sv.Color.BLACK
-            # )
-            # trace_annotator = sv.TraceAnnotator(
-            #     position=sv.Position.CENTER, trace_length=100, thickness=2)
-            frame_num = fc.FrameCounter()
-
-            # dict maping class_id to class_name
-            CLASS_NAMES_DICT = model.model.names
-            # class_ids of interest - car, motorcycle, bus and truck
-            CLASS_ID = [2,3, 5, 7]
-
-            # Store the track history
-            track_history = defaultdict(lambda: [])
-
-            # analysis per frame here
-            while cap.isOpened():
-                try:
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                except Exception as e:
-                    print( e )
-                    continue
-                results = model.track(frame, persist=True, conf=confidence_threshold, iou=iou_thres)
-                annotated_frame = results[0].plot()
+            for i, cap in enumerate(caps):
+                # Create the tracker threads
+                progress_bars[i] = pb.Progress_bar(i, caps[i].get( cv2.CAP_PROP_FRAME_COUNT ))
+                counter = st.session_state.counters.get(i, [])
+                iterables.append([caps[i], model, counter, i, confidence_threshold, iou_thres, CLASS_ID, progress_bars[i]])
                 
-                # Get the boxes and track IDs
-                boxes = results[0].boxes.xywh.cpu()
-                track_ids = results[0].boxes.id.int().cpu().tolist() if results[0].boxes.id is not None else []
-
-                # Visualize the results on the frame
-                annotated_frame = results[0].plot()
-
-                # Plot the tracks
-                for box, track_id in zip(boxes, track_ids):
-                    x, y, w, h = box
-                    track = track_history[track_id]
-                    track.append((float(x), float(y)))  # x, y center point
-                    if len(track) > 120:  # retain 90 tracks for 90 frames
-                        track.pop(0)
-
-                    # Draw the tracking lines
-                    points = np.hstack(track).astype(np.int32).reshape((-1, 1, 2))
-                    cv2.polylines(annotated_frame, [points], isClosed=False, color=(230, 230, 230), thickness=10)
             
-                # filtering out detections with unwanted classes
-                # detections = sv.Detections.from_ultralytics(results)
-                # detections = detections[np.isin(detections.class_id, CLASS_ID)]
+            # Use ThreadPoolExecutor to manage concurrent execution
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                ctx = get_script_run_ctx()
+                # Submit tasks for execution
+                futures = [executor.submit(run_tracker_in_thread, *x, ctx) for x in iterables]
 
-                # tracking detections
-                # detections = byte_tracker.update_with_detections(detections)
-                # labels = [
-                #         f"#{tracker_id} {model.model.names[class_id]} {confidence:0.2f}"
-                #     for confidence, class_id, tracker_id
-                #     in zip(detections.confidence, detections.class_id, detections.tracker_id)
-                # ]
-                # annotated_frame = trace_annotator.annotate(frame.copy(), detections)
-                # annotated_frame = bounding_box_annotator.annotate(
-                #     annotated_frame, detections
-                # )
-                # annotated_frame = label_annotator.annotate(
-                #     annotated_frame, detections, labels
-                # )
-                image = icounter.update_counters( results, annotated_frame )
+                # Collect results from completed tasks
+                results = [future.result() for future in as_completed(futures)]
 
-                # Update object localizer
-                # image, result = track_and_annotate_detections( frame, detections, sort_tracker,
-                #                                               st.session_state.counters, progress( 0 ) )
-                process.stdin.write( cv2.cvtColor( image, cv2.COLOR_BGR2RGB ).astype( np.uint8 ).tobytes() )
-                st.session_state['result_list'].extend( results )
-#
-                # progress of analysis
-                progress_bar.progress( progress( 1 ) / total_frame )
-                progress_txt.caption( f'Analysing Video: {progress( 0 )} out of {total_frame} frames' )
-
-            process.stdin.close()
-            process.wait()
-            process.kill()
-            cap.release()
-
-            # TODO: skip writing the analysis result into a temp file and read into memory
-            with open( output_path, "rb" ) as fh:
-                buf = BytesIO( fh.read() )
-            st.session_state.video = buf
-            os.remove( output_path )
-# 
-            progress_bar.progress( 100 )
-            progress_txt.empty()
+            
             st.session_state.counted = True
+            st.session_state.videos = results
 
-        if st.session_state.video is not None:
-            st.video( st.session_state.video )
+            for k,p in progress_bars.items():
+                p.terminate()
+
+        if len(st.session_state.videos):
+            st.video( st.session_state.videos[tabs] )
 
         # Dumping analysis result into table
         if st.session_state.counted:
@@ -223,7 +241,7 @@ def video_object_detection(variables):
                 if len( st.session_state.result_list ) > 0:
                     result_df = session_result.result_to_df( st.session_state.result_list )
                     st.dataframe( result_df, use_container_width=True )
-            icounter.show_counter_results()
+            # icounter.show_counter_results()
 
 
 @st.cache
