@@ -33,6 +33,9 @@ from streamlit_webrtc import (
 st.set_page_config( layout="wide" )
 logger = logging.getLogger( __name__ )
 
+# class_ids of interest - car, motorcycle, bus and truck
+CLASS_ID = [2,3, 5, 7]
+
 # func to save BytesIO on a drive
 def write_bytesio_to_file(filename, bytesio):
     """
@@ -173,11 +176,9 @@ def video_object_detection(variables):
             write_bytesio_to_file(temp_file_to_save, f)
             caps[i] = cv2.VideoCapture(temp_file_to_save)
 
-        # class_ids of interest - car, motorcycle, bus and truck
-        CLASS_ID = [2,3, 5, 7]
+
         # init object detector and tracker
-        model = YOLO(config.STYLES[weight])
-        model.classes=CLASS_ID
+        model = load_model(weight)
         # dict maping class_id to class_name
         st.session_state.class_names = model.names
 
@@ -241,10 +242,10 @@ def video_object_detection(variables):
 
 
 @st.cache
-def load_model(weight, conf):
-    detector = detection_helpers.Detector( conf )
-    detector.load_model( 'weights/' + config.STYLES[weight], trace=False )
-    return detector
+def load_model(weight):
+    model =  YOLO(config.STYLES[weight])
+    model.classes=CLASS_ID
+    return model
 
 
 def live_object_detection(variables):
