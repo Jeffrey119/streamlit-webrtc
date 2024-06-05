@@ -231,6 +231,9 @@ class st_IntersectCounter:
             self.counters_table = st.session_state.counters_tables.get(self.tab_id,None)
         if 'counters' not in st.session_state:
             st.session_state.counters = {}
+        if 'counter_apply_all' not in st.session_state:
+            st.session_state.counter_apply_all = False
+            st.session_state.counter_apply_all_tab = -1
         self.display_scale = width / screen_width *0.9
         self.counters_df_display = None
         self.counters_num = 0
@@ -239,26 +242,48 @@ class st_IntersectCounter:
         self.counter_result_display = None
         screen_height = height // self.display_scale
         with self.wrapper:
-            st.caption( "Draw lines on the below picture to set up counting function" )
-            canvas_result = st_canvas(
-                width=screen_width,
-                height=screen_height,
-                background_image=Image.fromarray( cv2.cvtColor( image, cv2.COLOR_BGR2RGB ) ),
-                stroke_width=1,
-                drawing_mode='line', key="canvas"+str(self.tab_id)
-            )
+            if id == st.session_state.counter_apply_all_tab or st.session_state.counter_apply_all_tab < 0:
+                st.caption( "Draw lines on the below picture to set up counting function" )
+                canvas_result = st_canvas(
+                    width=screen_width,
+                    height=screen_height,
+                    background_image=Image.fromarray( cv2.cvtColor( image, cv2.COLOR_BGR2RGB ) ),
+                    stroke_width=1,
+                    drawing_mode='line', key="canvas"+str(self.tab_id)
+                )
 
-            if canvas_result.json_data is not None:
-                if len( canvas_result.json_data['objects'] ) > 0:
-                    self.canvas_result = canvas_result.json_data['objects']
-                    self.counters_num = len( self.canvas_result )
-                    self.format_counters_display()
-                    all( self.generate_counters() )
-                    st.markdown( '**Screenline Counters**' )    
-            if st.session_state.counters_tables.get(self.tab_id) is not None:
-                self.counters_df_display = st.dataframe(
-                    st.session_state.counters_tables.get(self.tab_id).style.format( precision=1 ), use_container_width=True, )
-                        #st.markdown( '**Screenline Counters Result**' )
+                if canvas_result.json_data is not None:
+                    if len( canvas_result.json_data['objects'] ) > 0:
+                        self.canvas_result = canvas_result.json_data['objects']
+                        self.counters_num = len( self.canvas_result )
+                        self.format_counters_display()
+                        all( self.generate_counters() )
+                        st.markdown( '**Screenline Counters**' )   
+
+                st.checkbox( "Apply to all videos" , key="counter_apply_all", on_change=self.apply_all_counter)
+
+                if st.session_state.counters_tables.get(self.tab_id) is not None:
+                    self.counters_df_display = st.dataframe(
+                        st.session_state.counters_tables.get(self.tab_id).style.format( precision=1 ), use_container_width=True, )
+                            #st.markdown( '**Screenline Counters Result**' )
+            else:
+                st.markdown( f'**Counter inherited from Video [{st.session_state.files[st.session_state.counter_apply_all].name}]**' )
+                st.checkbox( "Apply to all videos" , key="counter_apply_all", on_change=self.apply_all_counter, disabled=True)
+
+    def apply_all_counter(self):
+        if st.session_state.counter_apply_all:
+            if len(st.session_state.counters[self.tab_id] ):
+                videos_count = len(st.session_state.files)
+                existed_counter = st.session_state.counters[self.tab_id] 
+                st.session_state.counters = {i:existed_counter for i,_ in enumerate(range(videos_count))}
+                st.session_state.counters_tables = {i:self.counters_table for i, _ in enumerate(range(videos_count))}
+                st.session_state.counter_apply_all_tab = self.tab_id
+        else:
+            for i, c in enumerate(st.session_state.counters):
+                if i != self.tab_id:
+                    st.session_state.counters[i] = []
+                    st.session_state.counters_tables[i] = pd.DataFrame([])
+            st.session_state.counter_apply_all_tab = -1
 
     def generate_counters(self):
         # if not st.session_state.counted:
