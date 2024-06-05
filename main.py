@@ -47,7 +47,7 @@ def write_bytesio_to_file(filename, bytesio):
         # Copy the BytesIO stream to the output file
         outfile.write(bytesio.getbuffer())
 
-def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, progress, ctx):
+def run_tracker_in_thread(cap, weight, counter, tab_id, conf, iou, CLASS_ID, progress, ctx):
     """
     Runs a video file or webcam stream concurrently with the YOLOv8 model using threading.
 
@@ -64,11 +64,12 @@ def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, prog
     """
 
     add_script_run_ctx(threading.currentThread(), ctx)
+    print(f'Thread {tab_id} running')
 
     width, height = int( cap.get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( cap.get( cv2.CAP_PROP_FRAME_HEIGHT ) )
     fps = cap.get( cv2.CAP_PROP_FPS )
     time_now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S') 
-    output_path = os.path.join( config.HERE, f"results\\{time_now}.mp4" )
+    output_path = os.path.join( config.HERE, f"results\\{time_now}_Video{tab_id}.mp4" )
 
     # encode cv2 output into h264
     # https://stackoverflow.com/questions/30509573/writing-an-mp4-video-using-python-opencv
@@ -85,42 +86,47 @@ def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, prog
 
     # us_model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
+    model = load_model(weight)
+
     while True:
-        ret, frame = cap.read()  # Read the video frames
+        try:
+            ret, frame = cap.read()  # Read the video frames
 
-        # Exit the loop if no more frames in either video
-        if not ret:
-            break
-        
-        # inputs = ImageLoader.load_image(Image.fromarray(frame))
-        # lr = frame[::].astype(np.float32).transpose([2, 0, 1]) / 255.0
-        # inputs = torch.as_tensor(np.array([lr]))
-        # pred = us_model(inputs)
-# # 
-        # # Up-scale image
-        # pred = pred.data.cpu().numpy()
-        # pred = pred[0].transpose((1, 2, 0)) * 255.0
-        # pred = pred.astype(np.uint8)
-        # pred = cv2.cvtColor(pred, cv2.COLOR_BGR2RGB)
-        # frame = pred
+            # Exit the loop if no more frames in either video
+            if not ret:
+                break
+            
+            # inputs = ImageLoader.load_image(Image.fromarray(frame))
+            # lr = frame[::].astype(np.float32).transpose([2, 0, 1]) / 255.0
+            # inputs = torch.as_tensor(np.array([lr]))
+            # pred = us_model(inputs)
+    # # 
+            # # Up-scale image
+            # pred = pred.data.cpu().numpy()
+            # pred = pred[0].transpose((1, 2, 0)) * 255.0
+            # pred = pred.astype(np.uint8)
+            # pred = cv2.cvtColor(pred, cv2.COLOR_BGR2RGB)
+            # frame = pred
 
-        # Apply your low-light enhancement algorithm (example with simple histogram equalization)
-        # frame = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+            # Apply your low-light enhancement algorithm (example with simple histogram equalization)
+            # frame = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
 
-        # Track objects in frames if available
-        results = model.track(frame, agnostic_nms=True, device=0, persist=True, conf=conf, iou=iou, classes=CLASS_ID)
-        annotated_frame = frame
-        if len(counter):
-            for icounter in counter:
-                annotated_frame = icounter.update_counters(annotated_frame, results, progress.counter(0))
-        else:
-            annotated_frame = results[0].plot()
-        annotated_frame = cv2.resize(annotated_frame, (width, height)) 
-        process.stdin.write( cv2.cvtColor( annotated_frame, cv2.COLOR_BGR2RGB ).astype( np.uint8 ).tobytes() )
-        # st.session_state['result_list'].extend( results )
+            # Track objects in frames if available
+            results = model.track(frame, agnostic_nms=True, device=0, persist=True, conf=conf, iou=iou, classes=CLASS_ID)
+            annotated_frame = frame
+            if len(counter):
+                for icounter in counter:
+                    annotated_frame = icounter.update_counters(annotated_frame, results, progress.counter(0))
+            else:
+                annotated_frame = results[0].plot()
+            annotated_frame = cv2.resize(annotated_frame, (width, height)) 
+            process.stdin.write( cv2.cvtColor( annotated_frame, cv2.COLOR_BGR2RGB ).astype( np.uint8 ).tobytes() )
+            # st.session_state['result_list'].extend( results )
 
-        progress.progress(1)
-#
+            progress.progress(1)
+#       
+        except Exception as e:
+            print(f"An exception occurred in thread {tab_id}: {str(e)}")
 
     # Release video sources  
     process.stdin.close()
@@ -210,7 +216,7 @@ def video_object_detection(variables):
                 # Create the tracker threads
                 progress_bars[i] = pb.Progress_bar(i, caps[i].get( cv2.CAP_PROP_FRAME_COUNT ))
                 counter = st.session_state.counters.get(i, [])
-                iterables.append([caps[i], model, counter, i, confidence_threshold, iou_thres, CLASS_ID, progress_bars[i]])
+                iterables.append([caps[i], weight, counter, i, confidence_threshold, iou_thres, CLASS_ID, progress_bars[i]])
                 
             
             # Use ThreadPoolExecutor to manage concurrent execution
@@ -235,13 +241,13 @@ def video_object_detection(variables):
         # Dumping analysis result into table
         if st.session_state.counted:
             if st.checkbox( "Show all detection results" ):
-                if len(st.session_state.counters[tabs] ) > 0:
-                    result_df = session_result.result_to_df( st.session_state.counters[tabs] )
+                if len(st.session_state.counters.get(tabs, []) ) > 0:
+                    result_df = session_result.result_to_df( st.session_state.counters[tabs] , tabs)
                     st.dataframe( result_df, use_container_width=True )
             # icounter.show_counter_results()
 
 
-@st.cache
+# @st.cache_resource 
 def load_model(weight):
     model =  YOLO(config.STYLES[weight])
     model.classes=CLASS_ID
