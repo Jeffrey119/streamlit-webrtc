@@ -29,6 +29,7 @@ from super_image import EdsrModel, ImageLoader
 import torch.nn.functional as F
 from cv2 import dnn_superres
 import torch
+from datetime import datetime
 
 sys.setrecursionlimit( 4000 )
 
@@ -72,7 +73,8 @@ def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, prog
 
     width, height = int( cap.get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( cap.get( cv2.CAP_PROP_FRAME_HEIGHT ) )
     fps = cap.get( cv2.CAP_PROP_FPS )
-    output_path = os.path.join( config.HERE, f"storage\\{str( uuid.uuid4() )}.mp4" )
+    time_now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S') 
+    output_path = os.path.join( config.HERE, f"results\\{time_now}.mp4" )
 
     # encode cv2 output into h264
     # https://stackoverflow.com/questions/30509573/writing-an-mp4-video-using-python-opencv
@@ -87,7 +89,7 @@ def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, prog
     ffmpeg_source = config.FFMPEG_PATH if platform.processor() else 'ffmpeg'
     process = subprocess.Popen( [ffmpeg_source] + args, stdin=subprocess.PIPE )
 
-    us_model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
+    # us_model = EdsrModel.from_pretrained('eugenesiow/edsr-base', scale=2)
 
     while True:
         ret, frame = cap.read()  # Read the video frames
@@ -112,12 +114,13 @@ def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, prog
         # frame = cv2.equalizeHist(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
 
         # Track objects in frames if available
-        results = model.track(frame, persist=True, conf=conf, iou=iou, classes=CLASS_ID)
-        annotated_frame = results[0].plot()
+        results = model.track(frame, agnostic_nms=True, device=0, persist=True, conf=conf, iou=iou, classes=CLASS_ID)
+        annotated_frame = frame
         if len(counter):
             for icounter in counter:
-                annotated_frame = icounter.start_counting(annotated_frame, results)
-        
+                annotated_frame = icounter.update_counters(annotated_frame, results, progress.counter(0))
+        else:
+            annotated_frame = results[0].plot()
         annotated_frame = cv2.resize(annotated_frame, (width, height)) 
         process.stdin.write( cv2.cvtColor( annotated_frame, cv2.COLOR_BGR2RGB ).astype( np.uint8 ).tobytes() )
         # st.session_state['result_list'].extend( results )
@@ -134,7 +137,9 @@ def run_tracker_in_thread(cap, model, counter, tab_id, conf, iou, CLASS_ID, prog
     # TODO: skip writing the analysis result into a temp file and read into memory
     with open( output_path, "rb" ) as fh:
         buf = BytesIO( fh.read() )
-    os.remove( output_path )
+    #os.remove( output_path )
+
+
 
     return buf
 
@@ -192,7 +197,7 @@ def video_object_detection(variables):
         success, image = caps[tabs].read()
 
         # setup expander for user to draw line counters
-        icounters[id] = ic.st_IntersectCounter( image, tabs, width, height )
+        icounters[tabs] = ic.st_IntersectCounter( image, tabs, width, height )
 
         # size limited by streamlit cloud service (superseded)
         # if max( width, height ) > 1920 or min( width, height ) > 1080:
@@ -238,8 +243,8 @@ def video_object_detection(variables):
         # Dumping analysis result into table
         if st.session_state.counted:
             if st.checkbox( "Show all detection results" ):
-                if len( st.session_state.result_list ) > 0:
-                    result_df = session_result.result_to_df( st.session_state.result_list )
+                if len(st.session_state.counters[tabs] ) > 0:
+                    result_df = session_result.result_to_df( st.session_state.counters[tabs] )
                     st.dataframe( result_df, use_container_width=True )
             # icounter.show_counter_results()
 

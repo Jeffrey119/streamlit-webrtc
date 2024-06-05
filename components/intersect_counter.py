@@ -9,6 +9,7 @@ from typing import List
 from pandas.api.types import (
     is_categorical_dtype,
     is_datetime64_any_dtype,
+    is_datetime64_any_dtype,
     is_numeric_dtype,
     is_object_dtype,
 )
@@ -16,6 +17,9 @@ from supervision.annotators.utils import ColorLookup, Trace, resolve_color
 from ultralytics import YOLO, solutions
 from components import session_result
 from collections import defaultdict
+from ultralytics.utils.plotting import Annotator, colors
+
+from shapely.geometry import LineString, Point, Polygon
 
 COLORS = np.random.uniform( 0, 255, size=(1024, 3) )
 
@@ -57,13 +61,14 @@ class IntersectCounter(solutions.ObjectCounter):
         self.vertices = [v * scale for v in vertices]
         # Init Object Counter
         super().__init__(
-            view_img=True,
+            view_img=False,
             reg_pts=self.vertices,
             classes_names=classes_names,
             draw_tracks=True,
             line_thickness=2,
         )
         self.id = int( id )
+        self.track_in_frame = {}
 
     @classmethod
     def init_centroid(cls, centroid, x_offset, y_offset, id, class_names, scale=1.0):
@@ -88,17 +93,125 @@ class IntersectCounter(solutions.ObjectCounter):
 
         # Tracks info
         self.track_history = defaultdict(list)
+        self.track_in_frame = {}
 
-    def update_counters(self, frame, tracks, override_counter = None):
+    def update_counters(self, frame, tracks, frame_no, override_counter = None):
+        """
+        Main function to start the object counting process.
+
+        Args:
+            im0 (ndarray): Current frame from the video stream.
+            tracks (list): List of tracks obtained from the object tracking process.
+        """
         if override_counter is not None:
             counters = override_counter # cannot access st.session state in webrtc
-        else:
-            counters = st.session_state.counters[self.tab_id]
-        annontatedframe = frame
-        if len( counters ) > 0:
-            for p in counters:
-                annontatedframe = p.counter.start_counting(annontatedframe, tracks)
-        return annontatedframe
+
+        self.im0 = frame
+        self.extract_and_process_tracks(tracks, frame_no)
+        if self.view_img:
+            self.display_frames()
+        return self.im0
+
+    def counted_objects (self):
+        return self.count_ids
+    
+    # override original method by ultralytics
+    def extract_and_process_tracks(self, tracks, frame_no):
+        """Extracts and processes tracks for object counting in a video stream."""
+
+        # Annotator Init and region drawing
+        self.annotator = Annotator(self.im0, self.tf, self.names)
+
+        # Draw region or line
+        self.annotator.draw_region(reg_pts=self.reg_pts, color=self.region_color, thickness=self.region_thickness)
+
+        # Annotate Frame Number
+        font = cv2.FONT_HERSHEY_DUPLEX
+        color = (255, 120, 0) # red
+        fontsize = 10
+        text = F"Frame:{frame_no}"
+        position = (50, 50)
+        self.annotator.text(position, text, color)
+
+        if tracks[0].boxes.id is not None:
+            boxes = tracks[0].boxes.xyxy.cpu()
+            clss = tracks[0].boxes.cls.cpu().tolist()
+            track_ids = tracks[0].boxes.id.int().cpu().tolist()
+
+            # Extract tracks
+            for box, track_id, cls in zip(boxes, track_ids, clss):
+                # Draw bounding box
+                self.annotator.box_label(box, label=f"{self.names[cls]}#{track_id}", color=colors(int(track_id), True))
+
+                # Store class info
+                if self.names[cls] not in self.class_wise_count:
+                    self.class_wise_count[self.names[cls]] = {"IN": [], "OUT": []}
+
+                # Store Frame number
+                if track_id not in self.track_in_frame:
+                    self.track_in_frame[track_id] = [frame_no]
+                else:
+                    self.track_in_frame[track_id].append(frame_no)
+
+                # Draw Tracks
+                track_line = self.track_history[track_id]
+                track_line.append((float((box[0] + box[2]) / 2), float((box[1] + box[3]) / 2)))
+                if len(track_line) > 30:
+                     track_line.pop(0)
+
+                # Draw track trails
+                if self.draw_tracks:
+                    self.annotator.draw_centroid_and_tracks(
+                        track_line,
+                        color=self.track_color if self.track_color else colors(int(track_id), True),
+                        track_thickness=self.track_thickness,
+                    )
+
+                prev_position = self.track_history[track_id][-2] if len(self.track_history[track_id]) > 1 else None
+
+                # Count objects in any polygon
+                if len(self.reg_pts) >= 3:
+                    is_inside = self.counting_region.contains(Point(track_line[-1]))
+
+                    if prev_position is not None and is_inside and track_id not in self.count_ids:
+                        self.count_ids.append(track_id)
+
+                        if (box[0] - prev_position[0]) * (self.counting_region.centroid.x - prev_position[0]) > 0:
+                            self.in_counts += 1
+                            self.class_wise_count[self.names[cls]]["IN"].append(track_id)
+                        else:
+                            self.out_counts += 1
+                            self.class_wise_count[self.names[cls]]["OUT"].append(track_id)
+
+                # Count objects using line
+                elif len(self.reg_pts) == 2:
+                    if prev_position is not None and track_id not in self.count_ids:
+                        distance = Point(track_line[-1]).distance(self.counting_region)
+                        if distance < self.line_dist_thresh and track_id not in self.count_ids:
+                            self.count_ids.append(track_id)
+
+                            if (box[0] - prev_position[0]) * (self.counting_region.centroid.x - prev_position[0]) > 0:
+                                self.in_counts += 1
+                                self.class_wise_count[self.names[cls]]["IN"].append(track_id)
+                            else:
+                                self.out_counts += 1
+                                self.class_wise_count[self.names[cls]]["OUT"].append(track_id)
+
+        labels_dict = {}
+
+        for key, value in self.class_wise_count.items():
+            if len(value["IN"]) != 0 or len(value["OUT"]) != 0:
+                if not self.view_in_counts and not self.view_out_counts:
+                    continue
+                elif not self.view_in_counts:
+                    labels_dict[str.capitalize(key)] = f"OUT {len(value['OUT'])}"
+                elif not self.view_out_counts:
+                    labels_dict[str.capitalize(key)] = f"IN {len(value['IN'])}"
+                else:
+                    labels_dict[str.capitalize(key)] = f"IN {len(value['IN'])} OUT {len(value['OUT'])}"
+
+        if labels_dict:
+            self.annotator.display_analytics(self.im0, labels_dict, self.count_txt_color, self.count_bg_color, 10)
 
 
 
@@ -125,7 +238,7 @@ class st_IntersectCounter:
         self.wrapper = st.expander( "**Setup Counter**" , expanded=True)
         self.option = 'Empty'
         self.counter_result_display = None
-        screen_height = max(height // self.display_scale, 400)
+        screen_height = height // self.display_scale
         with self.wrapper:
             st.caption( "Draw lines on the below picture to set up counting function" )
             canvas_result = st_canvas(
@@ -142,7 +255,7 @@ class st_IntersectCounter:
                     self.counters_num = len( self.canvas_result )
                     self.format_counters_display()
                     all( self.generate_counters() )
-                    st.markdown( '**Screenline Counters**' )
+                    st.markdown( '**Screenline Counters**' )    
             if st.session_state.counters_tables.get(self.tab_id) is not None:
                 self.counters_df_display = st.dataframe(
                     st.session_state.counters_tables.get(self.tab_id).style.format( precision=1 ), use_container_width=True, )
@@ -161,7 +274,7 @@ class st_IntersectCounter:
             yoffset = self.counters_table['y1'][ind]
             counter = IntersectCounter.init_centroid( centroid, xoffset, yoffset, ind, st.session_state.class_names, self.display_scale )
             existed_counter.append( counter )
-            self.sync_session_state()
+            self.sync_session_state(existed_counter)
             yield counter
 
     def filter_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -249,7 +362,8 @@ class st_IntersectCounter:
 
     def show_counter_results(self):
         if len( st.session_state.counters.get(self.tab_id, None) ) > 0:
-            result_df = self.filter_dataframe(session_result.result_to_df([d.counted_objects for d in st.session_state.counters.get(self.tab_id, None)], counter_column=True) )
+            result_df = self.filter_dataframe(session_result.result_to_df(
+                [d.counted_objects for d in st.session_state.counters.get(self.tab_id, None)], counter_column=True) )
             result_df = result_df.style.background_gradient( axis=0, gmap=result_df['counter'], cmap='BuPu' )
             if self.counter_result_display is not None:
                 self.counter_result_display.dataframe( result_df, use_container_width=True )
@@ -273,6 +387,8 @@ class st_IntersectCounter:
         self.sync_session_state()
         return self.counters_table
 
-    def sync_session_state(self):
+    def sync_session_state(self, existed_counter=None):
+        if existed_counter:
+            st.session_state.counters[self.tab_id] = existed_counter
         st.session_state.counters_tables[self.tab_id] = self.counters_table
 
