@@ -6,8 +6,6 @@ import logging
 import queue
 import ffmpeg
 import subprocess
-import tempfile
-import uuid
 import av
 import cv2
 import numpy as np
@@ -16,19 +14,12 @@ import streamlit as st
 from aiortc.contrib.media import MediaPlayer
 import sys
 from ultralytics import YOLO
-import supervision as sv
-from collections import defaultdict
-from streamlit_drawable_canvas import st_canvas
 from streamlit.runtime.scriptrunner.script_run_context import add_script_run_ctx, get_script_run_ctx
 from PIL import Image
 from st_tabs import TabBar
 import threading
 import queue
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from super_image import EdsrModel, ImageLoader
-import torch.nn.functional as F
-from cv2 import dnn_superres
-import torch
 from datetime import datetime
 
 sys.setrecursionlimit( 4000 )

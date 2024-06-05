@@ -13,7 +13,6 @@ from pandas.api.types import (
     is_numeric_dtype,
     is_object_dtype,
 )
-from supervision.annotators.utils import ColorLookup, Trace, resolve_color
 from ultralytics import YOLO, solutions
 from components import session_result
 from collections import defaultdict
