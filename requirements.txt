@@ -95,3 +95,6 @@ lap
 motmetrics
 filterpy
 h5py
+ultralytics
+st-tabs
+shapely

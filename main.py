@@ -181,6 +181,7 @@ def video_object_detection(variables):
             temp_file_to_save = f'./storage/temp_file_{i}.mp4'
             write_bytesio_to_file(temp_file_to_save, f)
             caps[i] = cv2.VideoCapture(temp_file_to_save)
+            
 
 
         # init object detector and tracker
