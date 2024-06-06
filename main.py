@@ -176,6 +176,8 @@ def video_object_detection(variables):
         # temp dir for saving the video to be processed by opencv
         if not os.path.exists( os.path.join( config.HERE, 'storage' ) ):
             os.makedirs( os.path.join( config.HERE, 'storage' ) )
+        if not os.path.exists( os.path.join( config.HERE, 'results' ) ):
+            os.makedirs( os.path.join( config.HERE, 'results' ) )
         # save the uploaded file to a temporary location
         for i, f in enumerate(files):
             temp_file_to_save = f'./storage/temp_file_{i}.mp4'
