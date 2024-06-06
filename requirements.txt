@@ -98,3 +98,4 @@ h5py
 ultralytics
 st-tabs
 shapely
+openpyxl
