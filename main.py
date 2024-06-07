@@ -169,9 +169,8 @@ def video_object_detection(variables):
             st.session_state.counters_tables = {}
             st.session_state.counted = False
             st.session_state.result_list = {}
-
+            st.session_state.caps = {}
         icounters = {}
-        caps = {}
 
         # temp dir for saving the video to be processed by opencv
         if not os.path.exists( os.path.join( config.HERE, 'storage' ) ):
@@ -182,7 +181,7 @@ def video_object_detection(variables):
         for i, f in enumerate(files):
             temp_file_to_save = f'./storage/temp_file_{i}.mp4'
             write_bytesio_to_file(temp_file_to_save, f)
-            caps[i] = cv2.VideoCapture(temp_file_to_save)
+            st.session_state.caps[i] = cv2.VideoCapture(temp_file_to_save)
             
 
 
@@ -194,8 +193,8 @@ def video_object_detection(variables):
         tabs = TabBar(tabs=[f.name for f in files], default=0)
  
 
-        width, height = int( caps[tabs].get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( caps[tabs].get( cv2.CAP_PROP_FRAME_HEIGHT ) )
-        success, image = caps[tabs].read()
+        width, height = int( st.session_state.caps[tabs].get( cv2.CAP_PROP_FRAME_WIDTH ) ), int( st.session_state.caps[tabs].get( cv2.CAP_PROP_FRAME_HEIGHT ) )
+        success, image = st.session_state.caps[tabs].read()
 
         # setup expander for user to draw line counters
         icounters[tabs] = ic.st_IntersectCounter( image, tabs, width, height )
@@ -215,11 +214,11 @@ def video_object_detection(variables):
             progress_bars = {}
             iterables = []
 
-            for i, cap in enumerate(caps):
+            for i, cap in enumerate(st.session_state.caps):
                 # Create the tracker threads
-                progress_bars[i] = pb.Progress_bar(i, caps[i].get( cv2.CAP_PROP_FRAME_COUNT ))
+                progress_bars[i] = pb.Progress_bar(i, st.session_state.caps[i].get( cv2.CAP_PROP_FRAME_COUNT ))
                 counter = st.session_state.counters.get(i, [])
-                iterables.append([caps[i], weight, counter, i, confidence_threshold, iou_thres, CLASS_ID, progress_bars[i]])
+                iterables.append([st.session_state.caps[i], weight, counter, i, confidence_threshold, iou_thres, CLASS_ID, progress_bars[i]])
                 
             
             # Use ThreadPoolExecutor to manage concurrent execution
@@ -242,11 +241,13 @@ def video_object_detection(variables):
             st.video( st.session_state.videos[tabs] )
 
         # Dumping analysis result into table
+        result_df = {}
         if st.session_state.counted:
-            if st.checkbox( "Show all detection results" ):
-                if len(st.session_state.counters.get(tabs, []) ) > 0:
-                    result_df = session_result.result_to_df( st.session_state.counters[tabs] , tabs)
-                    st.dataframe( result_df, use_container_width=True )
+            for i,_ in enumerate(files):
+                if len(st.session_state.counters.get(i, []) ) > 0:
+                    result_df[i] = session_result.result_to_df( st.session_state.counters[i] , st.session_state.files[i].name.split('.')[0])
+        if st.checkbox( "Show all detection results" ):
+            st.dataframe( result_df[i], use_container_width=True )
             # icounter.show_counter_results()
 
 

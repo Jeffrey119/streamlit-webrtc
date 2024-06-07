@@ -25,7 +25,7 @@ def result_to_df(counters, tabs, counter_column = False):
             counted_list = [check_object_class(counter,o) for o in tracked_objects]
             result_df.insert( 1, f'counter_{i}', counted_list )
     time_now = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-    result_df.to_excel(f'results\\{time_now}_result{tabs}.xlsx')
+    result_df.to_excel(f'results\\{tabs}.xlsx')
     return result_df
 
 def check_object_class (counter, object):
